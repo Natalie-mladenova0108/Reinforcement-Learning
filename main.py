@@ -1,20 +1,21 @@
-import matplotlib.pyplot as plt
+import gymnasium as gym
+from minigrid.core.grid import Grid
+from minigrid.core.mission import MissionSpace
+from minigrid.core.world_object import Goal
+from minigrid.minigrid_env import MiniGridEnv
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.neighbors import NearestNeighbors
-from minigrid.core.grid import Grid
-from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import Goal
-from minigrid.minigrid_env import MiniGridEnv
+import matplotlib.pyplot as plt
 
-
-# Custom EmptyEnv class
+# Custom Environment
 class EmptyEnv(MiniGridEnv):
-    def __init__(self, size=8, agent_start_pos=(1, 1), agent_start_dir=0, max_steps=None, **kwargs):
+    def __init__(self, size=5, agent_start_pos=(1, 1), agent_start_dir=0, max_steps=None, **kwargs):
         self.agent_start_pos = agent_start_pos
         self.agent_start_dir = agent_start_dir
+
         mission_space = MissionSpace(mission_func=self._gen_mission)
 
         if max_steps is None:
@@ -36,13 +37,14 @@ class EmptyEnv(MiniGridEnv):
         self.grid = Grid(width, height)
         self.grid.wall_rect(0, 0, width, height)
         self.put_obj(Goal(), width - 2, height - 2)
+
         if self.agent_start_pos is not None:
             self.agent_pos = self.agent_start_pos
             self.agent_dir = self.agent_start_dir
         else:
             self.place_agent()
-        self.mission = "get to the green goal square"
 
+        self.mission = "get to the green goal square"
 
 # Parameters
 MAX_STEPS = 100
@@ -50,11 +52,13 @@ EPISODES = 500
 K = 10
 BETA = 0.1
 L = 5
-EPSILON = 0.1
+EPSILON = 1.0
+EPSILON_DECAY = 0.995
+MIN_EPSILON = 0.1
 LEARNING_RATE = 0.001
 DISCOUNT_FACTOR = 0.99
 
-# Environment setup
+# Set up the environment
 env = EmptyEnv(size=5)
 obs_space = env.observation_space['image'].shape
 action_space = env.action_space.n
@@ -98,7 +102,7 @@ def compute_episodic_reward(state):
     d2 = np.mean(distances)
     return min(1 / (d2 + 0.001), L)
 
-# Reward tracking
+# Reward Tracking
 rewards_per_episode = []
 
 # Training Loop
@@ -110,6 +114,7 @@ for episode in range(EPISODES):
     done = False
 
     while not done and steps < MAX_STEPS:
+        # Epsilon-greedy action selection
         if np.random.rand() < EPSILON:
             action = env.action_space.sample()
         else:
@@ -117,42 +122,59 @@ for episode in range(EPISODES):
                 q_values = q_network(torch.tensor(obs['image'], dtype=torch.float32).unsqueeze(0).to(device))
                 action = q_values.argmax().item()
         
+        # Take action in the environment
         next_obs, reward, done, truncated, info = env.step(action)
         extrinsic_reward = reward
         intrinsic_reward = compute_episodic_reward(next_obs['image'].flatten())
         total_reward += extrinsic_reward + BETA * intrinsic_reward
 
+        # Compute target Q-value
+        next_q_values = q_network(torch.tensor(next_obs['image'], dtype=torch.float32).unsqueeze(0).to(device))
+        next_action = next_q_values.argmax().item()
+
         with torch.no_grad():
             target = total_reward + DISCOUNT_FACTOR * target_network(
                 torch.tensor(next_obs['image'], dtype=torch.float32).unsqueeze(0).to(device)
-            ).max().item() * (1 - done)
+            )[0, next_action] * (1 - done)
         
+        # Update Q-network
         predicted = q_network(torch.tensor(obs['image'], dtype=torch.float32).unsqueeze(0).to(device))[0, action]
-        loss = loss_fn(predicted, torch.tensor(target, dtype=torch.float32).to(device))
+        loss = loss_fn(predicted, target.clone().detach().to(device))
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
+        # Update episodic memory and state
         episodic_memory.append(next_obs['image'].flatten())
         obs = next_obs
         steps += 1
     
-    rewards_per_episode.append(total_reward)
-
+    # Update target network occasionally
     if episode % 10 == 0:
         target_network.load_state_dict(q_network.state_dict())
 
-    print(f"Episode {episode + 1}/{EPISODES}, Total Reward: {total_reward:.2f}")
+    rewards_per_episode.append(total_reward)
+    EPSILON = max(MIN_EPSILON, EPSILON * EPSILON_DECAY)  # Decay epsilon
+    print(f"Episode {episode + 1}/{EPISODES}, Total Reward: {total_reward:.2f}, Epsilon: {EPSILON:.2f}")
 
 # Save the Model
 torch.save(q_network.state_dict(), "ngu_minigrid_empty.pth")
 print("Model saved successfully!")
 
+# Function to calculate moving average
+def moving_average(data, window_size):
+    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+
+# Smooth the rewards
+window_size = 10  # Adjust the window size for smoothing
+smoothed_rewards = moving_average(rewards_per_episode, window_size)
+
 # Plotting the rewards
 plt.figure(figsize=(10, 6))
-plt.plot(range(1, EPISODES + 1), rewards_per_episode, label="Reward per Episode", marker='o')
-plt.title('Reward per Episode')
+plt.plot(range(1, len(rewards_per_episode) + 1), rewards_per_episode, alpha=0.5, label="Reward per Episode", marker='o')
+plt.plot(range(window_size, len(rewards_per_episode) + 1), smoothed_rewards, label=f"Smoothed Reward (window={window_size})", color='red', linewidth=2)
+plt.title('Reward per Episode with Smoothed Curve')
 plt.xlabel('Episode')
 plt.ylabel('Total Reward')
 plt.grid(True)
