@@ -44,15 +44,15 @@ class MinigridFeaturesExtractor(BaseFeaturesExtractor):
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         return self.linear(self.cnn(observations))
 
-valid_actions = [Actions.left, Actions.right, Actions.forward]
-env = gym.make("MiniGrid-Empty-16x16-v0")
-env = EnvWrapper(env, valid_actions)
+# valid_actions = [Actions.left, Actions.right, Actions.forward]
+env = gym.make("MiniGrid-DoorKey-5x5-v0")
+# env = EnvWrapper(env, valid_actions)
 env = RGBImgObsWrapper(env)
-env = ImgObsWrapper(env) 
+env = ImgObsWrapper(env)
 # env = gym.wrappers.TransformObservation(env, lambda obs: obs.transpose(2, 0, 1), None)
-print(env.observation_space)
+# print(env.observation_space)
 # env.observation_space = gym.spaces.Box(0, 255, (3, 64, 64), np.uint8)
-print(env.observation_space)
+# print(env.observation_space)
 
 def train_model():
     policy_kwargs = dict(
@@ -84,10 +84,10 @@ def train_model():
         progress_bar=True,
     )
 
-    model.save("dqn_minigrid_16")
+    model.save("dqn_doorkey_5")
 
-def evaluate_model():
-    model = DQN.load("dqn_minigrid_16")
+def evaluate_model(model_name):
+    model = DQN.load(model_name)
 
     MAX_STEPS = 300
     obs = env.reset()
@@ -107,10 +107,6 @@ def evaluate_model():
         print(f"Reward received: {total_reward}; Reached target: {done}")
 
 train_model()
-evaluate_model()
-
-# Results for 5x5: consistently 0.955
-# Results for 8x8: consistently 0.961328125
-# Results for 16x16:
+evaluate_model("dqn_doorkey_5")
 
 env.close()
